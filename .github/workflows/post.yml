@@ -1,0 +1,96 @@
+name: Post to Instagram
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+    - cron: "30 7 * * *"
+    - cron: "0 12 * * *"
+    - cron: "30 14 * * *"
+  workflow_dispatch:
+    inputs:
+      kind:
+        description: "What to make"
+        type: choice
+        options: [reel, carousel]
+        default: reel
+      dry_run:
+        description: "Dry run = build only, do NOT post (download it from Artifacts)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ig-post
+  cancel-in-progress: false
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: System packages (FFmpeg + Hindi fonts)
+        run: sudo apt-get update -y && sudo apt-get install -y ffmpeg fonts-noto-core espeak-ng
+
+      - name: Python packages
+        run: pip install -r requirements.txt
+
+      - name: Decide what to make
+        id: pick
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            KIND="${{ inputs.kind }}"; DRY="${{ inputs.dry_run }}"
+          else
+            DRY=false
+            if [ "${{ github.event.schedule }}" = "0 12 * * *" ]; then KIND=carousel; else KIND=reel; fi
+          fi
+          echo "kind=$KIND" >> "$GITHUB_OUTPUT"
+          echo "dry=$DRY" >> "$GITHUB_OUTPUT"
+
+      - name: Generate and post
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          CLOUDINARY_CLOUD_NAME: ${{ secrets.CLOUDINARY_CLOUD_NAME }}
+          CLOUDINARY_API_KEY: ${{ secrets.CLOUDINARY_API_KEY }}
+          CLOUDINARY_API_SECRET: ${{ secrets.CLOUDINARY_API_SECRET }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          IG_HANDLE: ${{ secrets.IG_HANDLE }}
+          TTS_VOICE: ${{ secrets.TTS_VOICE }}
+          TTS_RATE: ${{ secrets.TTS_RATE }}
+          TTS_PROVIDER: ${{ secrets.TTS_PROVIDER }}
+          GEMINI_TTS_VOICE: ${{ secrets.GEMINI_TTS_VOICE }}
+          GEMINI_MODEL: ${{ secrets.GEMINI_MODEL }}
+        run: |
+          ARGS=""
+          if [ "${{ steps.pick.outputs.dry }}" = "true" ]; then ARGS="--dry-run"; fi
+          python -m src.main ${{ steps.pick.outputs.kind }} $ARGS
+
+      - name: Keep dry-run output for download
+        if: steps.pick.outputs.dry == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dry-run-output
+          path: output/
+          retention-days: 3
+
+      - name: Save posting history
+        if: steps.pick.outputs.dry != 'true'
+        run: |
+          git config user.name "ig-bot"
+          git config user.email "ig-bot@users.noreply.github.com"
+          git add state/history.json
+          if ! git diff --cached --quiet; then
+            git commit -m "log: ${{ steps.pick.outputs.kind }} posted"
+            git pull --rebase
+            git push
+          fi
