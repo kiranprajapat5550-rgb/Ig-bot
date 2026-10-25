@@ -13,9 +13,39 @@ FALLBACK_COLORS = ["0x0f172a", "0x1e1b4b", "0x064e3b", "0x4a044e", "0x1c1917"]
 
 
 # ---------------------------------------------------------------- footage
+def _is_pixabay_key() -> bool:
+    """Pixabay keys look like 12345678-abcdef0123...; Pexels keys are one long alphanumeric string.
+    Either one can be stored in the PEXELS_API_KEY secret."""
+    return bool(re.fullmatch(r"\d+-[0-9a-f]+", config.PEXELS_API_KEY or ""))
+
+
+def _pixabay_link(query: str, used: set) -> str | None:
+    try:
+        r = requests.get(
+            "https://pixabay.com/api/videos/",
+            params={"key": config.PEXELS_API_KEY, "q": query, "per_page": 20, "safesearch": "true"},
+            timeout=30,
+        )
+        r.raise_for_status()
+        hits = [h for h in r.json().get("hits", []) if h["id"] not in used and h.get("duration", 0) >= 4]
+    except Exception as e:
+        print(f"pixabay search failed for '{query}': {e}")
+        return None
+    random.shuffle(hits)
+    for h in hits:
+        for size in ("large", "medium"):
+            v = h.get("videos", {}).get(size) or {}
+            if v.get("url") and v.get("height", 0) >= 720:
+                used.add(h["id"])
+                return v["url"]
+    return None
+
+
 def _pexels_link(query: str, used: set) -> str | None:
     if not config.PEXELS_API_KEY:
         return None
+    if _is_pixabay_key():
+        return _pixabay_link(query, used)
     try:
         r = requests.get(
             "https://api.pexels.com/videos/search",
@@ -169,3 +199,4 @@ def build_reel(data: dict, voice: Path, durs: list[float], workdir: Path) -> Pat
             "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", "-shortest", out]
     run(cmd, cwd=workdir)
     return out
+            
